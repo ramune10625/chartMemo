@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Takafumi (via Gemini CLI)"
 #property link      ""
-#property version   "1.60" // Refactoring version
+#property version   "1.70" // Dynamic UI version
 #property strict
 
 #define STATE_FILE_NAME "ChartMemo_State.bin" // 状態保存ファイル名 (バイナリ)
@@ -22,20 +22,24 @@
 #define PANEL_X 10
 #define PANEL_Y 25
 #define PANEL_WIDTH 300
-#define PANEL_HEIGHT 400
+#define PANEL_HEIGHT 550 // パネルサイズを拡大
 #define BUTTON_WIDTH 140
 #define BUTTON_HEIGHT 25
 #define PADDING 10
+#define COMMENT_EDIT_HEIGHT 40
 
 // --- 構造体定義 ---
-#define MAX_EVIDENCE_COUNT 50
+#define MAX_EVIDENCE_COUNT 5
 #define OBJECT_NAME_LENGTH 64
+#define COMMENT_LENGTH 256
+#define GLOBAL_COMMENT_LENGTH 1024
 
 // 根拠エリアの情報
 struct Evidence
 {
     char rectName[OBJECT_NAME_LENGTH];
     char labelName[OBJECT_NAME_LENGTH];
+    char comment[COMMENT_LENGTH]; // 根拠コメント
 };
 
 // セッション全体の状態を管理する構造体
@@ -44,6 +48,7 @@ struct SessionState
     bool   isSessionActive;
     int    evidenceCount;
     char   tradeAreaRectName[OBJECT_NAME_LENGTH];
+    char   globalComment[GLOBAL_COMMENT_LENGTH]; // 全体コメント
 };
 
 // ファイルに保存する全データ
@@ -61,6 +66,7 @@ string        g_drawingMode = "";     // 描画モード (UIの一時的な状�
 
 //--- プロトタイプ宣言 ---
 void UpdateUIState();
+void UpdateCommentUI();
 void FinalizeEvidenceObject(string objectName);
 void FinalizeTradeAreaObject(string objectName);
 void ResetSession();
@@ -76,6 +82,7 @@ int OnInit()
 {
     //--- チャートイベントの有効化 ---
     ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
+    ChartSetInteger(0, CHART_EVENT_OBJECT_CHANGE, true); // CHANGEイベントを有効化
 
     //--- 状態を復元 ---
     LoadState();
@@ -160,7 +167,7 @@ int OnInit()
     ObjectSetInteger(0, addTradeButtonName, OBJPROP_FONTSIZE, fontSize);
     ObjectSetInteger(0, addTradeButtonName, OBJPROP_SELECTABLE, false);
 
-    // --- コメントエリア ---
+    // --- 全体コメントエリア ---
     y_offset += BUTTON_HEIGHT + PADDING * 2;
     string globalCommentLabelName = OBJ_PREFIX + "GlobalCommentLabel";
     ObjectCreate(0, globalCommentLabelName, OBJ_LABEL, 0, 0, 0);
@@ -180,25 +187,12 @@ int OnInit()
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_YDISTANCE, y_offset);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_XSIZE, PANEL_WIDTH - PADDING * 2);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_YSIZE, 100);
+    ObjectSetString(0, globalCommentEditName, OBJPROP_TEXT, CharArrayToString(g_chartData.session.globalComment));
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_BORDER_COLOR, clrGray);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_BACK, false);
     ObjectSetString(0, globalCommentEditName, OBJPROP_FONT, font);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_FONTSIZE, fontSize);
-
-    // --- 根拠コメントエリアのプレースホルダー / ステータス表示 ---
-    y_offset += 100 + PADDING;
-    string evidenceAreaLabelName = OBJ_PREFIX + "EvidenceAreaLabel";
-    ObjectCreate(0, evidenceAreaLabelName, OBJ_LABEL, 0, 0, 0);
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_XDISTANCE, PANEL_X + PADDING);
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_YDISTANCE, y_offset);
-    ObjectSetString(0, evidenceAreaLabelName, OBJPROP_TEXT, "（根拠コメントはここに表示されます）");
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_COLOR, clrGray);
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_BACK, false);
-    ObjectSetString(0, evidenceAreaLabelName, OBJPROP_FONT, font);
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_FONTSIZE, fontSize);
-    ObjectSetInteger(0, evidenceAreaLabelName, OBJPROP_SELECTABLE, false);
 
     // --- 完了ボタン ---
     string completeButtonName = OBJ_PREFIX + "CompleteButton";
@@ -215,6 +209,7 @@ int OnInit()
     ObjectSetInteger(0, completeButtonName, OBJPROP_SELECTABLE, false);
 
     //--- UIの初期状態を設定 ---
+    UpdateCommentUI();
     UpdateUIState();
     ChartRedraw();
     return(INIT_SUCCEEDED);
@@ -227,6 +222,7 @@ void OnDeinit(const int reason)
 {
     //--- イベントを無効化 ---
     ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, false);
+    ChartSetInteger(0, CHART_EVENT_OBJECT_CHANGE, false);
 
     // 時間足の変更や再コンパイルが理由の場合は、オブジェクトを削除せずに終了
     if (reason == REASON_CHARTCHANGE || reason == REASON_RECOMPILE) {
@@ -268,29 +264,29 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         if(sparam == OBJ_PREFIX + "StartButton")
         {
             g_chartData.session.isSessionActive = true;
-            ResetSession(); // この中でSaveStateが呼ばれる
+            ResetSession();
             UpdateUIState();
             Print("ChartMemo: 記録セッションを開始しました。");
         }
         else if(sparam == OBJ_PREFIX + "CompleteButton")
         {
             g_chartData.session.isSessionActive = false;
-            SaveState(); // セッションが非アクティブになったことを保存
+            // TODO: ここで最終的なコメント内容を取得・保存する処理が必要
+            SaveState();
             DeleteDrawnObjects();
+            UpdateCommentUI();
             UpdateUIState();
             Print("ChartMemo: 記録セッションを完了しました。");
         }
         else if(sparam == OBJ_PREFIX + "AddEvidenceButton")
         {
             g_drawingMode = "evidence";
-            ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, "描画モード: 根拠エリア(青)を描画");
-            ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrBlue);
+            Print("描画モード: 根拠エリア(青)を描画");
         }
         else if(sparam == OBJ_PREFIX + "AddTradeButton")
         {
             g_drawingMode = "trade";
-            ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, "描画モード: トレードエリア(赤)を描画");
-            ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrRed);
+            Print("描画モード: トレードエリア(赤)を描画");
         }
         else if(sparam == OBJ_PREFIX + "DeleteLastButton")
         {
@@ -302,22 +298,37 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
     //--- オブジェクト作成イベント ---
     if(id == CHARTEVENT_OBJECT_CREATE)
     {
-        // パネルのラベルを元に戻す共通処理
-        string original_text = "（根拠コメントはここに表示されます）";
-        
         if(g_drawingMode == "evidence" && ObjectGetInteger(0, sparam, OBJPROP_TYPE) == OBJ_RECTANGLE)
         {
             FinalizeEvidenceObject(sparam);
             g_drawingMode = ""; // 描画モードをリセット
-            ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, original_text);
-            ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrGray);
         }
         else if(g_drawingMode == "trade" && ObjectGetInteger(0, sparam, OBJPROP_TYPE) == OBJ_RECTANGLE)
         {
             FinalizeTradeAreaObject(sparam);
             g_drawingMode = ""; // 描画モードをリセット
-            ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, original_text);
-            ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrGray);
+        }
+    }
+    
+    //--- テキスト編集イベント ---
+    if(id == CHARTEVENT_OBJECT_CHANGE)
+    {
+        // 全体コメント
+        if (sparam == OBJ_PREFIX + "GlobalCommentEdit") {
+            string text = ObjectGetString(0, sparam, OBJPROP_TEXT);
+            StringToCharArray(text, g_chartData.session.globalComment);
+            SaveState();
+        }
+        // 根拠コメント
+        if (StringFind(sparam, OBJ_PREFIX + "EvidenceCommentEdit_") == 0) {
+            string index_str = StringSubstr(sparam, StringLen(OBJ_PREFIX + "EvidenceCommentEdit_"));
+            int index = (int)StringToInteger(index_str) - 1;
+            
+            if(index >= 0 && index < g_chartData.session.evidenceCount) {
+                string text = ObjectGetString(0, sparam, OBJPROP_TEXT);
+                StringToCharArray(text, g_chartData.evidences[index].comment);
+                SaveState();
+            }
         }
     }
 }
@@ -339,6 +350,54 @@ void UpdateUIState()
 
     ChartRedraw();
 }
+
+//+------------------------------------------------------------------+
+//| コメントUIを更新する関数                                         |
+//+------------------------------------------------------------------+
+void UpdateCommentUI()
+{
+    // 既存の根拠コメントUIをすべて削除
+    ObjectsDeleteAll(0, OBJ_PREFIX + "EvidenceCommentLabel_");
+    ObjectsDeleteAll(0, OBJ_PREFIX + "EvidenceCommentEdit_");
+
+    string font = "Yu Gothic UI";
+    int fontSize = 9;
+    int y_offset = PANEL_Y + PADDING + (BUTTON_HEIGHT + PADDING) * 3 + PADDING + 100 + PADDING; // GlobalCommentEditの下から開始
+
+    // 根拠の数だけUIを再生成
+    for (int i = 0; i < g_chartData.session.evidenceCount; i++) {
+        string label_name = OBJ_PREFIX + "EvidenceCommentLabel_" + (string)(i + 1);
+        string edit_name = OBJ_PREFIX + "EvidenceCommentEdit_" + (string)(i + 1);
+
+        // ラベル
+        ObjectCreate(0, label_name, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, label_name, OBJPROP_XDISTANCE, PANEL_X + PADDING);
+        ObjectSetInteger(0, label_name, OBJPROP_YDISTANCE, y_offset);
+        ObjectSetString(0, label_name, OBJPROP_TEXT, "根拠 " + (string)(i + 1) + ":");
+        ObjectSetInteger(0, label_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetString(0, label_name, OBJPROP_FONT, font);
+        ObjectSetInteger(0, label_name, OBJPROP_FONTSIZE, fontSize);
+
+        y_offset += 15;
+
+        // テキストボックス
+        ObjectCreate(0, edit_name, OBJ_EDIT, 0, 0, 0);
+        ObjectSetInteger(0, edit_name, OBJPROP_XDISTANCE, PANEL_X + PADDING);
+        ObjectSetInteger(0, edit_name, OBJPROP_YDISTANCE, y_offset);
+        ObjectSetInteger(0, edit_name, OBJPROP_XSIZE, PANEL_WIDTH - PADDING * 2);
+        ObjectSetInteger(0, edit_name, OBJPROP_YSIZE, COMMENT_EDIT_HEIGHT);
+        ObjectSetString(0, edit_name, OBJPROP_TEXT, CharArrayToString(g_chartData.evidences[i].comment));
+        ObjectSetInteger(0, edit_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, edit_name, OBJPROP_BORDER_COLOR, clrGray);
+        ObjectSetString(0, edit_name, OBJPROP_FONT, font);
+        ObjectSetInteger(0, edit_name, OBJPROP_FONTSIZE, fontSize);
+        ObjectSetInteger(0, edit_name, OBJPROP_ALIGN, ALIGN_LEFT);
+
+        y_offset += COMMENT_EDIT_HEIGHT + PADDING;
+    }
+    ChartRedraw();
+}
+
 
 //+------------------------------------------------------------------+
 //| 根拠エリアオブジェクトを整形する関数                             |
@@ -383,6 +442,7 @@ void FinalizeEvidenceObject(string objectName)
     StringToCharArray(objectName, g_chartData.evidences[currentCount - 1].rectName);
     StringToCharArray(labelName, g_chartData.evidences[currentCount - 1].labelName);
 
+    UpdateCommentUI();
     SaveState(); // 状態を保存
     UpdateUIState(); // 削除ボタンの状態を更新
     ChartRedraw();
@@ -427,6 +487,7 @@ void ResetSession()
     ZeroMemory(g_chartData); // 構造体をゼロクリア
     // isSessionActiveはtrueのままにしたいので、リセット後に設定
     g_chartData.session.isSessionActive = true; 
+    UpdateCommentUI();
     SaveState(); // リセットされた状態を保存
 }
 
@@ -452,6 +513,10 @@ void DeleteDrawnObjects()
         ObjectDelete(0, tradeRectName);
     }
     
+    // コメントUIも削除
+    ObjectsDeleteAll(0, OBJ_PREFIX + "EvidenceCommentLabel_");
+    ObjectsDeleteAll(0, OBJ_PREFIX + "EvidenceCommentEdit_");
+
     // 状態変数はここではクリアせず、ResetSessionで行う
     ChartRedraw();
 }
@@ -474,6 +539,7 @@ void DeleteLastEvidence()
         // カウンタを減らす
         g_chartData.session.evidenceCount--;
 
+        UpdateCommentUI();
         SaveState(); // 状態を保存
         UpdateUIState();
         ChartRedraw();
