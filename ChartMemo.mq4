@@ -5,10 +5,10 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Takafumi (via Gemini CLI)"
 #property link      ""
-#property version   "1.50" // トレードエリア機能追加バージョン
+#property version   "1.60" // Refactoring version
 #property strict
 
-#define STATE_FILE_NAME "ChartMemo_State.tmp" // 状態保存ファイル名
+#define STATE_FILE_NAME "ChartMemo_State.bin" // 状態保存ファイル名 (バイナリ)
 
 //--- インジケーターを別のウィンドウではなく、メインチャートに表示
 #property indicator_chart_window
@@ -28,18 +28,36 @@
 #define PADDING 10
 
 // --- 構造体定義 ---
+#define MAX_EVIDENCE_COUNT 50
+#define OBJECT_NAME_LENGTH 64
+
+// 根拠エリアの情報
 struct Evidence
 {
-    string rectName;
-    string labelName;
+    char rectName[OBJECT_NAME_LENGTH];
+    char labelName[OBJECT_NAME_LENGTH];
 };
 
+// セッション全体の状態を管理する構造体
+struct SessionState
+{
+    bool   isSessionActive;
+    int    evidenceCount;
+    char   tradeAreaRectName[OBJECT_NAME_LENGTH];
+};
+
+// ファイルに保存する全データ
+struct ChartMemoData
+{
+    SessionState session;
+    Evidence     evidences[MAX_EVIDENCE_COUNT];
+};
+
+
 //--- グローバル変数 ---
-bool   isSessionActive = false; // セッションがアクティブか
-string drawingMode = "";        // 描画モード ("", "evidence", "trade")
-int    evidenceCount = 0;       // 根拠エリアのカウンター
-Evidence evidences[];             // 根拠エリアのオブジェクト情報を格納
-string tradeAreaRectName = ""; // トレードエリアは1つだけ
+ChartMemoData g_chartData;            // 全セッションデータ
+string        g_drawingMode = "";     // 描画モード (UIの一時的な状態)
+
 
 //--- プロトタイプ宣言 ---
 void UpdateUIState();
@@ -249,14 +267,14 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
     {
         if(sparam == OBJ_PREFIX + "StartButton")
         {
-            isSessionActive = true;
+            g_chartData.session.isSessionActive = true;
             ResetSession(); // この中でSaveStateが呼ばれる
             UpdateUIState();
             Print("ChartMemo: 記録セッションを開始しました。");
         }
         else if(sparam == OBJ_PREFIX + "CompleteButton")
         {
-            isSessionActive = false;
+            g_chartData.session.isSessionActive = false;
             SaveState(); // セッションが非アクティブになったことを保存
             DeleteDrawnObjects();
             UpdateUIState();
@@ -264,13 +282,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         }
         else if(sparam == OBJ_PREFIX + "AddEvidenceButton")
         {
-            drawingMode = "evidence";
+            g_drawingMode = "evidence";
             ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, "描画モード: 根拠エリア(青)を描画");
             ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrBlue);
         }
         else if(sparam == OBJ_PREFIX + "AddTradeButton")
         {
-            drawingMode = "trade";
+            g_drawingMode = "trade";
             ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, "描画モード: トレードエリア(赤)を描画");
             ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrRed);
         }
@@ -287,17 +305,17 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         // パネルのラベルを元に戻す共通処理
         string original_text = "（根拠コメントはここに表示されます）";
         
-        if(drawingMode == "evidence" && ObjectGetInteger(0, sparam, OBJPROP_TYPE) == OBJ_RECTANGLE)
+        if(g_drawingMode == "evidence" && ObjectGetInteger(0, sparam, OBJPROP_TYPE) == OBJ_RECTANGLE)
         {
             FinalizeEvidenceObject(sparam);
-            drawingMode = ""; // 描画モードをリセット
+            g_drawingMode = ""; // 描画モードをリセット
             ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, original_text);
             ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrGray);
         }
-        else if(drawingMode == "trade" && ObjectGetInteger(0, sparam, OBJPROP_TYPE) == OBJ_RECTANGLE)
+        else if(g_drawingMode == "trade" && ObjectGetInteger(0, sparam, OBJPROP_TYPE) == OBJ_RECTANGLE)
         {
             FinalizeTradeAreaObject(sparam);
-            drawingMode = ""; // 描画モードをリセット
+            g_drawingMode = ""; // 描画モードをリセット
             ObjectSetString(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_TEXT, original_text);
             ObjectSetInteger(0, OBJ_PREFIX + "EvidenceAreaLabel", OBJPROP_COLOR, clrGray);
         }
@@ -310,13 +328,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 void UpdateUIState()
 {
     // セッションの状態に応じてボタンの有効/無効を切り替える
-    ObjectSetInteger(0, OBJ_PREFIX + "StartButton", OBJPROP_STATE, isSessionActive);
-    ObjectSetInteger(0, OBJ_PREFIX + "AddEvidenceButton", OBJPROP_STATE, !isSessionActive);
-    ObjectSetInteger(0, OBJ_PREFIX + "AddTradeButton", OBJPROP_STATE, !isSessionActive);
-    ObjectSetInteger(0, OBJ_PREFIX + "CompleteButton", OBJPROP_STATE, !isSessionActive);
+    ObjectSetInteger(0, OBJ_PREFIX + "StartButton", OBJPROP_STATE, g_chartData.session.isSessionActive);
+    ObjectSetInteger(0, OBJ_PREFIX + "AddEvidenceButton", OBJPROP_STATE, !g_chartData.session.isSessionActive);
+    ObjectSetInteger(0, OBJ_PREFIX + "AddTradeButton", OBJPROP_STATE, !g_chartData.session.isSessionActive);
+    ObjectSetInteger(0, OBJ_PREFIX + "CompleteButton", OBJPROP_STATE, !g_chartData.session.isSessionActive);
 
     // 「最後の根拠を削除」ボタンは、セッション中で根拠が1つ以上ある場合のみ有効
-    bool canDelete = isSessionActive && (evidenceCount > 0);
+    bool canDelete = g_chartData.session.isSessionActive && (g_chartData.session.evidenceCount > 0);
     ObjectSetInteger(0, OBJ_PREFIX + "DeleteLastButton", OBJPROP_STATE, !canDelete);
 
     ChartRedraw();
@@ -327,7 +345,14 @@ void UpdateUIState()
 //+------------------------------------------------------------------+
 void FinalizeEvidenceObject(string objectName)
 {
-    evidenceCount++;
+    if (g_chartData.session.evidenceCount >= MAX_EVIDENCE_COUNT) {
+        Print("ChartMemo: 根拠エリアの最大数(" + (string)MAX_EVIDENCE_COUNT + ")に達しました。");
+        ObjectDelete(0, objectName); // 作成されたオブジェクトを削除
+        return;
+    }
+
+    g_chartData.session.evidenceCount++;
+    int currentCount = g_chartData.session.evidenceCount;
     
     ObjectSetString(0, objectName, OBJPROP_TEXT, "");
 
@@ -343,9 +368,9 @@ void FinalizeEvidenceObject(string objectName)
     // 番号ラベルを作成
     datetime time1 = (datetime)ObjectGetInteger(0, objectName, OBJPROP_TIME, 0);
     double price1 = ObjectGetDouble(0, objectName, OBJPROP_PRICE, 0);
-    string labelName = OBJ_PREFIX + "EvidenceLabel_" + (string)evidenceCount;
+    string labelName = OBJ_PREFIX + "EvidenceLabel_" + (string)currentCount;
     ObjectCreate(0, labelName, OBJ_TEXT, 0, time1, price1);
-    ObjectSetString(0, labelName, OBJPROP_TEXT, (string)evidenceCount);
+    ObjectSetString(0, labelName, OBJPROP_TEXT, (string)currentCount);
     ObjectSetInteger(0, labelName, OBJPROP_COLOR, clrBlue);
     ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 12);
     ObjectSetString(0, labelName, OBJPROP_FONT, "Arial Black");
@@ -355,9 +380,8 @@ void FinalizeEvidenceObject(string objectName)
     ObjectSetInteger(0, labelName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS); // 全時間足に表示
 
     // 後で削除するために名前をリストに保存
-    ArrayResize(evidences, evidenceCount);
-    evidences[evidenceCount - 1].rectName = objectName;
-    evidences[evidenceCount - 1].labelName = labelName;
+    StringToCharArray(objectName, g_chartData.evidences[currentCount - 1].rectName);
+    StringToCharArray(labelName, g_chartData.evidences[currentCount - 1].labelName);
 
     SaveState(); // 状態を保存
     UpdateUIState(); // 削除ボタンの状態を更新
@@ -369,10 +393,11 @@ void FinalizeEvidenceObject(string objectName)
 //+------------------------------------------------------------------+
 void FinalizeTradeAreaObject(string objectName)
 {
+    string oldRectName = CharArrayToString(g_chartData.session.tradeAreaRectName);
     // 既に存在する場合は古いものを削除
-    if(tradeAreaRectName != "" && ObjectFind(0, tradeAreaRectName) >= 0)
+    if(oldRectName != "" && ObjectFind(0, oldRectName) >= 0)
     {
-        ObjectDelete(0, tradeAreaRectName);
+        ObjectDelete(0, oldRectName);
     }
 
     // 新しいオブジェクトのプロパティを設定
@@ -386,7 +411,7 @@ void FinalizeTradeAreaObject(string objectName)
     ObjectSetInteger(0, objectName, OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS); // 全時間足に表示
 
     // 新しい名前を保存
-    tradeAreaRectName = objectName;
+    StringToCharArray(objectName, g_chartData.session.tradeAreaRectName);
     SaveState(); // 状態を保存
     ChartRedraw();
 }
@@ -397,10 +422,11 @@ void FinalizeTradeAreaObject(string objectName)
 //+------------------------------------------------------------------+
 void ResetSession()
 {
-    FileDelete(STATE_FILE_NAME); // 古い状態ファイルを削除
     DeleteDrawnObjects();
-    drawingMode = "";
-    evidenceCount = 0;
+    g_drawingMode = "";
+    ZeroMemory(g_chartData); // 構造体をゼロクリア
+    // isSessionActiveはtrueのままにしたいので、リセット後に設定
+    g_chartData.session.isSessionActive = true; 
     SaveState(); // リセットされた状態を保存
 }
 
@@ -410,24 +436,23 @@ void ResetSession()
 void DeleteDrawnObjects()
 {
     // 根拠エリアを削除
-    int total = ArraySize(evidences);
-    for(int i = 0; i < total; i++)
+    for(int i = 0; i < g_chartData.session.evidenceCount; i++)
     {
-        string rectName = evidences[i].rectName;
+        string rectName = CharArrayToString(g_chartData.evidences[i].rectName);
         if(rectName != "" && ObjectFind(0, rectName) >= 0) ObjectDelete(0, rectName);
 
-        string labelName = evidences[i].labelName;
+        string labelName = CharArrayToString(g_chartData.evidences[i].labelName);
         if(labelName != "" && ObjectFind(0, labelName) >= 0) ObjectDelete(0, labelName);
     }
-    ArrayResize(evidences, 0);
 
     // トレードエリアを削除
-    if(tradeAreaRectName != "" && ObjectFind(0, tradeAreaRectName) >= 0)
+    string tradeRectName = CharArrayToString(g_chartData.session.tradeAreaRectName);
+    if(tradeRectName != "" && ObjectFind(0, tradeRectName) >= 0)
     {
-        ObjectDelete(0, tradeAreaRectName);
+        ObjectDelete(0, tradeRectName);
     }
-    tradeAreaRectName = "";
-
+    
+    // 状態変数はここではクリアせず、ResetSessionで行う
     ChartRedraw();
 }
 
@@ -436,16 +461,18 @@ void DeleteDrawnObjects()
 //+------------------------------------------------------------------+
 void DeleteLastEvidence()
 {
-    if(evidenceCount > 0)
+    if(g_chartData.session.evidenceCount > 0)
     {
-        evidenceCount--;
-        string rectName = evidences[evidenceCount].rectName;
-        string labelName = evidences[evidenceCount].labelName;
+        int lastIndex = g_chartData.session.evidenceCount - 1;
+        
+        string rectName = CharArrayToString(g_chartData.evidences[lastIndex].rectName);
+        string labelName = CharArrayToString(g_chartData.evidences[lastIndex].labelName);
 
         if(rectName != "" && ObjectFind(0, rectName) >= 0) ObjectDelete(0, rectName);
         if(labelName != "" && ObjectFind(0, labelName) >= 0) ObjectDelete(0, labelName);
 
-        ArrayResize(evidences, evidenceCount);
+        // カウンタを減らす
+        g_chartData.session.evidenceCount--;
 
         SaveState(); // 状態を保存
         UpdateUIState();
@@ -459,23 +486,10 @@ void DeleteLastEvidence()
 //+------------------------------------------------------------------+
 void SaveState()
 {
-    string state_string = "";
-    // isSessionActive, evidenceCount, tradeAreaRectName
-    state_string += (isSessionActive ? "1" : "0") + "|";
-    state_string += IntegerToString(evidenceCount) + "|";
-    state_string += tradeAreaRectName + "|";
-
-    // evidences
-    for (int i = 0; i < evidenceCount; i++) {
-        state_string += evidences[i].rectName + "|";
-        state_string += evidences[i].labelName + "|";
-    }
-
-    // ファイルに書き込む
-    int handle = FileOpen(STATE_FILE_NAME, FILE_WRITE|FILE_TXT);
+    int handle = FileOpen(STATE_FILE_NAME, FILE_WRITE|FILE_BIN);
     if(handle != INVALID_HANDLE)
     {
-        FileWriteString(handle, state_string);
+        FileWriteStruct(handle, g_chartData);
         FileClose(handle);
     }
 }
@@ -489,45 +503,14 @@ void LoadState()
     // ファイルが存在しない場合は初期化
     if(!FileIsExist(STATE_FILE_NAME))
     {
-        isSessionActive = false;
-        evidenceCount = 0;
-        tradeAreaRectName = "";
-        ArrayResize(evidences, 0);
+        ZeroMemory(g_chartData); // 構造体をゼロクリア
         return;
     }
 
-    string state_string = "";
-    int handle = FileOpen(STATE_FILE_NAME, FILE_READ|FILE_TXT);
+    int handle = FileOpen(STATE_FILE_NAME, FILE_READ|FILE_BIN);
     if(handle != INVALID_HANDLE)
     {
-        // ファイルの終わりまで読み込む
-        while(!FileIsEnding(handle))
-        {
-            state_string += FileReadString(handle);
-        }
+        FileReadStruct(handle, g_chartData);
         FileClose(handle);
-    }
-
-    string parts[];
-    int count = StringSplit(state_string, '|', parts);
-
-    if (count < 3) return; // データが不完全
-
-    int current_index = 0;
-    isSessionActive = (StringToInteger(parts[current_index++]) == 1);
-    evidenceCount = (int)StringToInteger(parts[current_index++]);
-    tradeAreaRectName = parts[current_index++];
-
-    // evidencesの復元
-    if (evidenceCount > 0) {
-        ArrayResize(evidences, evidenceCount);
-        for (int i = 0; i < evidenceCount; i++) {
-            if (current_index + 1 < count) { // ペアで存在するかチェック
-                evidences[i].rectName = parts[current_index++];
-                evidences[i].labelName = parts[current_index++];
-            }
-        }
-    } else {
-        ArrayResize(evidences, 0);
     }
 }
