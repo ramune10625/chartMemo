@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Takafumi (via Gemini CLI)"
 #property link      ""
-#property version   "1.71" // Fix comment saving logic
+#property version   "1.72" // Bug fixes for compilation
 #property strict
 
 #define STATE_FILE_NAME "ChartMemo_State.bin" // 状態保存ファイル名 (バイナリ)
@@ -40,6 +40,7 @@ struct Evidence
     char rectName[OBJECT_NAME_LENGTH];
     char labelName[OBJECT_NAME_LENGTH];
     char comment[COMMENT_LENGTH]; // 根拠コメント
+    int  timeframe;               // 描画された時間足
 };
 
 // セッション全体の状態を管理する構造体
@@ -48,6 +49,7 @@ struct SessionState
     bool   isSessionActive;
     int    evidenceCount;
     char   tradeAreaRectName[OBJECT_NAME_LENGTH];
+    int    tradeAreaTimeframe;                   // トレードエリアが描画された時間足
     char   globalComment[GLOBAL_COMMENT_LENGTH]; // 全体コメント
 };
 
@@ -74,6 +76,9 @@ void DeleteDrawnObjects();
 void DeleteLastEvidence();
 void SaveState();
 void LoadState();
+void SaveCsvFiles();
+void CleanupSession();
+string TimeframeToString(int tf);
 
 //+------------------------------------------------------------------+
 //| Custom indicator initialization function                         |
@@ -189,7 +194,6 @@ int OnInit()
     ObjectSetString(0, globalCommentEditName, OBJPROP_TEXT, CharArrayToString(g_chartData.session.globalComment));
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_BORDER_COLOR, clrGray);
-    ObjectSetInteger(0, globalCommentEditName, OBJPROP_BACK, false);
     ObjectSetString(0, globalCommentEditName, OBJPROP_FONT, font);
     ObjectSetInteger(0, globalCommentEditName, OBJPROP_FONTSIZE, fontSize);
 
@@ -280,11 +284,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
                 StringToCharArray(comment, g_chartData.evidences[i].comment);
             }
 
-            SaveState(); // コメントが格納された状態で保存
-            DeleteDrawnObjects();
-            UpdateCommentUI();
-            UpdateUIState();
-            Print("ChartMemo: 記録セッションを完了しました。");
+            SaveCsvFiles();      // CSVに保存
+            CleanupSession();    // オブジェクトと内部データをクリーンアップ
+            UpdateUIState();     // ボタンの状態を更新
+            SaveState();         // クリーンな状態を保存
+            
+            Print("ChartMemo: 記録セッションを完了し、データを保存しました。");
         }
         else if(sparam == OBJ_PREFIX + "AddEvidenceButton")
         {
@@ -318,6 +323,157 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         }
     }
 }
+
+//+------------------------------------------------------------------+
+//| 時間足を文字列に変換する関数                                     |
+//+------------------------------------------------------------------+
+string TimeframeToString(int tf)
+{
+    switch(tf)
+    {
+        case PERIOD_M1:  return "M1";
+        case PERIOD_M5:  return "M5";
+        case PERIOD_M15: return "M15";
+        case PERIOD_M30: return "M30";
+        case PERIOD_H1:  return "H1";
+        case PERIOD_H4:  return "H4";
+        case PERIOD_D1:  return "D1";
+        case PERIOD_W1:  return "W1";
+        case PERIOD_MN1: return "MN1";
+        default:         return (string)tf;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| データをCSVファイルに保存する関数                                |
+//+------------------------------------------------------------------+
+void SaveCsvFiles()
+{
+    // 変数宣言を関数の先頭に移動
+    string startTime, startPrice, endTime, endPrice;
+
+    string tradeId = (string)TimeCurrent();
+    string tradeTimeframeStr = TimeframeToString(g_chartData.session.tradeAreaTimeframe);
+    // TradeAreaが描画されていない場合も考慮
+    if (g_chartData.session.tradeAreaTimeframe == 0) {
+        tradeTimeframeStr = TimeframeToString((int)Period()); // 現在のチャートの時間足を使用
+    }
+    string screenshotFile = Symbol() + "_" + tradeTimeframeStr + "_" + tradeId + ".png";
+    string dirName = "ChartMemo";
+    string screenshotPath = dirName + "\\" + screenshotFile;
+
+    // --- チャート画像を保存 ---
+    if(!ChartScreenShot(0, screenshotPath, 0, 0, ALIGN_RIGHT))
+    {
+        Print("ChartMemo: Error saving screenshot. Error code: ", GetLastError());
+    }
+
+    // --- trades.csvへの書き込み ---
+    string tradesPath = dirName + "\\trades.csv";
+    int tradesHandle = FileOpen(tradesPath, FILE_READ|FILE_WRITE|FILE_SHARE_WRITE);
+
+    if(tradesHandle != INVALID_HANDLE)
+    {
+        if(FileSize(tradesHandle) <= 0)
+        {
+            FileWriteString(tradesHandle, "TradeID,Timestamp,Symbol,Timeframe,GlobalComment,ScreenshotFile,TradeArea_StartTime,TradeArea_StartPrice,TradeArea_EndTime,TradeArea_EndPrice\n");
+        }
+
+        FileSeek(tradesHandle, 0, SEEK_END);
+
+        string tradeAreaName = CharArrayToString(g_chartData.session.tradeAreaRectName);
+        // 使用前に初期化
+        startTime = "N/A"; startPrice = "N/A"; endTime = "N/A"; endPrice = "N/A";
+        if(ObjectFind(0, tradeAreaName) >= 0)
+        {
+            startTime  = TimeToString((datetime)ObjectGetInteger(0, tradeAreaName, OBJPROP_TIME, 0), "yyyy.MM.dd HH:mm:ss");
+            startPrice = DoubleToString(ObjectGetDouble(0, tradeAreaName, OBJPROP_PRICE, 0), _Digits);
+            endTime    = TimeToString((datetime)ObjectGetInteger(0, tradeAreaName, OBJPROP_TIME, 1), "yyyy.MM.dd HH:mm:ss");
+            endPrice   = DoubleToString(ObjectGetDouble(0, tradeAreaName, OBJPROP_PRICE, 1), _Digits);
+        }
+
+        string globalComment = StringSubstr(CharArrayToString(g_chartData.session.globalComment), 0, GLOBAL_COMMENT_LENGTH -1);
+        StringReplace(globalComment, "\"", "\\\""); // Correct CSV quote escaping
+
+        string tradeLine = tradeId + "," +
+                           TimeToString(TimeCurrent(), "yyyy.MM.dd HH:mm:ss") + "," +
+                           Symbol() + "," +
+                           tradeTimeframeStr + "," +
+                           "\"" + globalComment + "\"," +
+                           screenshotFile + "," +
+                           startTime + "," + startPrice + "," + endTime + "," + endPrice + "\n";
+
+        FileWriteString(tradesHandle, tradeLine);
+        FileClose(tradesHandle);
+    }
+    else
+    {
+        Print("ChartMemo: Error opening trades.csv. Error code: ", GetLastError());
+    }
+
+    // --- evidence.csvへの書き込み ---
+    string evidencePath = dirName + "\\evidence.csv";
+    int evidenceHandle = FileOpen(evidencePath, FILE_READ|FILE_WRITE|FILE_SHARE_WRITE);
+
+    if(evidenceHandle != INVALID_HANDLE)
+    {
+        if(FileSize(evidenceHandle) <= 0)
+        {
+            FileWriteString(evidenceHandle, "EvidenceID,TradeID,EvidenceNumber,EvidenceTimeframe,EvidenceComment,EvidenceArea_StartTime,EvidenceArea_StartPrice,EvidenceArea_EndTime,EvidenceArea_EndPrice\n");
+        }
+
+        FileSeek(evidenceHandle, 0, SEEK_END);
+
+        for(int i = 0; i < g_chartData.session.evidenceCount; i++)
+        {
+            string evidenceId = tradeId + "_" + (string)(i+1);
+            string evidenceTimeframeStr = TimeframeToString(g_chartData.evidences[i].timeframe);
+
+            string rectName = CharArrayToString(g_chartData.evidences[i].rectName);
+            // 使用前に初期化
+            startTime = "N/A"; startPrice = "N/A"; endTime = "N/A"; endPrice = "N/A";
+            if(ObjectFind(0, rectName) >= 0)
+            {
+                startTime  = TimeToString((datetime)ObjectGetInteger(0, rectName, OBJPROP_TIME, 0), "yyyy.MM.dd HH:mm:ss");
+                startPrice = DoubleToString(ObjectGetDouble(0, rectName, OBJPROP_PRICE, 0), _Digits);
+                endTime    = TimeToString((datetime)ObjectGetInteger(0, rectName, OBJPROP_TIME, 1), "yyyy.MM.dd HH:mm:ss");
+                endPrice   = DoubleToString(ObjectGetDouble(0, rectName, OBJPROP_PRICE, 1), _Digits);
+            }
+            
+            string evidenceComment = StringSubstr(CharArrayToString(g_chartData.evidences[i].comment), 0, COMMENT_LENGTH - 1);
+            StringReplace(evidenceComment, "\"", "\\\""); // Correct CSV quote escaping
+
+            string evidenceLine = evidenceId + "," +
+                                  tradeId + "," +
+                                  (string)(i+1) + "," +
+                                  evidenceTimeframeStr + "," +
+                                  "\"" + evidenceComment + "\"," +
+                                  startTime + "," + startPrice + "," + endTime + "," + endPrice + "\n";
+
+            FileWriteString(evidenceHandle, evidenceLine);
+        }
+        FileClose(evidenceHandle);
+    }
+    else
+    {
+        Print("ChartMemo: Error opening evidence.csv. Error code: ", GetLastError());
+    }
+    Print("ChartMemo: データをCSVに保存しました。");
+}
+
+
+//+------------------------------------------------------------------+
+//| セッション完了後にクリーンアップする関数                         |
+//+------------------------------------------------------------------+
+void CleanupSession()
+{
+    DeleteDrawnObjects();
+    g_drawingMode = "";
+    ZeroMemory(g_chartData);
+    ObjectSetString(0, OBJ_PREFIX + "GlobalCommentEdit", OBJPROP_TEXT, "");
+    UpdateCommentUI();
+}
+
 
 //+------------------------------------------------------------------+
 //| UIの状態を更新する関数                                           |
@@ -427,6 +583,7 @@ void FinalizeEvidenceObject(string objectName)
     // 後で削除するために名前をリストに保存
     StringToCharArray(objectName, g_chartData.evidences[currentCount - 1].rectName);
     StringToCharArray(labelName, g_chartData.evidences[currentCount - 1].labelName);
+    g_chartData.evidences[currentCount - 1].timeframe = (int)Period();
 
     UpdateCommentUI();
     SaveState(); // 状態を保存
@@ -458,6 +615,7 @@ void FinalizeTradeAreaObject(string objectName)
 
     // 新しい名前を保存
     StringToCharArray(objectName, g_chartData.session.tradeAreaRectName);
+    g_chartData.session.tradeAreaTimeframe = (int)Period();
     SaveState(); // 状態を保存
     ChartRedraw();
 }
