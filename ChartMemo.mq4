@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, Takafumi (via Gemini CLI)"
 #property link      ""
-#property version   "1.70" // Dynamic UI version
+#property version   "1.71" // Fix comment saving logic
 #property strict
 
 #define STATE_FILE_NAME "ChartMemo_State.bin" // 状態保存ファイル名 (バイナリ)
@@ -82,7 +82,6 @@ int OnInit()
 {
     //--- チャートイベントの有効化 ---
     ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, true);
-    ChartSetInteger(0, CHART_EVENT_OBJECT_CHANGE, true); // CHANGEイベントを有効化
 
     //--- 状態を復元 ---
     LoadState();
@@ -222,7 +221,6 @@ void OnDeinit(const int reason)
 {
     //--- イベントを無効化 ---
     ChartSetInteger(0, CHART_EVENT_OBJECT_CREATE, false);
-    ChartSetInteger(0, CHART_EVENT_OBJECT_CHANGE, false);
 
     // 時間足の変更や再コンパイルが理由の場合は、オブジェクトを削除せずに終了
     if (reason == REASON_CHARTCHANGE || reason == REASON_RECOMPILE) {
@@ -271,8 +269,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         else if(sparam == OBJ_PREFIX + "CompleteButton")
         {
             g_chartData.session.isSessionActive = false;
-            // TODO: ここで最終的なコメント内容を取得・保存する処理が必要
-            SaveState();
+
+            // --- コメントを一括取得 ---
+            string globalComment = ObjectGetString(0, OBJ_PREFIX + "GlobalCommentEdit", OBJPROP_TEXT);
+            StringToCharArray(globalComment, g_chartData.session.globalComment);
+
+            for (int i = 0; i < g_chartData.session.evidenceCount; i++) {
+                string edit_name = OBJ_PREFIX + "EvidenceCommentEdit_" + (string)(i + 1);
+                string comment = ObjectGetString(0, edit_name, OBJPROP_TEXT);
+                StringToCharArray(comment, g_chartData.evidences[i].comment);
+            }
+
+            SaveState(); // コメントが格納された状態で保存
             DeleteDrawnObjects();
             UpdateCommentUI();
             UpdateUIState();
@@ -307,28 +315,6 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
         {
             FinalizeTradeAreaObject(sparam);
             g_drawingMode = ""; // 描画モードをリセット
-        }
-    }
-    
-    //--- テキスト編集イベント ---
-    if(id == CHARTEVENT_OBJECT_CHANGE)
-    {
-        // 全体コメント
-        if (sparam == OBJ_PREFIX + "GlobalCommentEdit") {
-            string text = ObjectGetString(0, sparam, OBJPROP_TEXT);
-            StringToCharArray(text, g_chartData.session.globalComment);
-            SaveState();
-        }
-        // 根拠コメント
-        if (StringFind(sparam, OBJ_PREFIX + "EvidenceCommentEdit_") == 0) {
-            string index_str = StringSubstr(sparam, StringLen(OBJ_PREFIX + "EvidenceCommentEdit_"));
-            int index = (int)StringToInteger(index_str) - 1;
-            
-            if(index >= 0 && index < g_chartData.session.evidenceCount) {
-                string text = ObjectGetString(0, sparam, OBJPROP_TEXT);
-                StringToCharArray(text, g_chartData.evidences[index].comment);
-                SaveState();
-            }
         }
     }
 }
