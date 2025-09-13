@@ -1,3 +1,6 @@
+#ifndef CHARTMEMO_DEFINES_MQH
+#define CHARTMEMO_DEFINES_MQH
+
 //+------------------------------------------------------------------+
 //|                                        ChartMemo_Defines.mqh |
 //|                        Copyright 2025, Takafumi (via Gemini CLI) |
@@ -50,3 +53,7 @@ struct ChartMemoData
     SessionState session;
     Evidence     evidences[MAX_EVIDENCE_COUNT];
 };
+
+
+
+#endif // CHARTMEMO_DEFINES_MQH

@@ -4,6 +4,8 @@
 //|                                                                  |
 //+------------------------------------------------------------------+
 
+#include "ChartMemo_Defines.mqh"
+
 //+------------------------------------------------------------------+
 //| データをCSVファイルに保存する関数                                |
 //+------------------------------------------------------------------+
@@ -18,9 +20,18 @@ void SaveCsvFiles()
     if (g_chartData.session.tradeAreaTimeframe == 0) {
         tradeTimeframeStr = TimeframeToString((int)Period()); // 現在のチャートの時間足を使用
     }
-    string screenshotFile = Symbol() + "_" + tradeTimeframeStr + "_" + tradeId + ".png";
+    // ファイル名とパスを生成
+    string cleanSymbol = Symbol();
+    StringReplace(cleanSymbol, "/", "-"); // ファイル名として無効な'/'を'-'に置換
+
+    // ファイル名として使える形式のタイムスタンプを作成 (例: 2025_09_14_01_30_55)
+    string fileTimestamp = TimeToString(TimeCurrent(), "yyyy_MM_dd_HH_mm_ss");
+
+    string screenshotFile = cleanSymbol + "_" + tradeTimeframeStr + "_" + fileTimestamp + ".png";
     string dirName = "ChartMemo";
-    string screenshotPath = dirName + "\\" + screenshotFile;
+    string screenshotPath = screenshotFile; // ★最終テスト: サブフォルダを使わず、Files直下に保存
+
+    Print("ChartMemo Path: ", screenshotPath);
 
     // --- チャート画像を保存 ---
     if(!ChartScreenShot(0, screenshotPath, 0, 0, ALIGN_RIGHT))
@@ -30,12 +41,14 @@ void SaveCsvFiles()
 
     // --- trades.csvへの書き込み ---
     string tradesPath = dirName + "\\trades.csv";
-    int tradesHandle = FileOpen(tradesPath, FILE_READ|FILE_WRITE|FILE_SHARE_WRITE);
+    int tradesHandle = FileOpen(tradesPath, FILE_READ|FILE_WRITE|FILE_SHARE_WRITE|FILE_UNICODE);
 
     if(tradesHandle != INVALID_HANDLE)
     {
         if(FileSize(tradesHandle) <= 0)
         {
+            FileWrite(tradesHandle, 255); // Write UTF-16LE BOM
+            FileWrite(tradesHandle, 254); // Write UTF-16LE BOM
             FileWriteString(tradesHandle, "TradeID,Timestamp,Symbol,Timeframe,GlobalComment,ScreenshotFile,TradeArea_StartTime,TradeArea_StartPrice,TradeArea_EndTime,TradeArea_EndPrice\n");
         }
 
@@ -77,12 +90,14 @@ void SaveCsvFiles()
 
     // --- evidence.csvへの書き込み ---
     string evidencePath = dirName + "\\evidence.csv";
-    int evidenceHandle = FileOpen(evidencePath, FILE_READ|FILE_WRITE|FILE_SHARE_WRITE);
+    int evidenceHandle = FileOpen(evidencePath, FILE_READ|FILE_WRITE|FILE_SHARE_WRITE|FILE_UNICODE);
 
     if(evidenceHandle != INVALID_HANDLE)
     {
         if(FileSize(evidenceHandle) <= 0)
         {
+            FileWrite(evidenceHandle, 255); // Write UTF-16LE BOM
+            FileWrite(evidenceHandle, 254); // Write UTF-16LE BOM
             FileWriteString(evidenceHandle, "EvidenceID,TradeID,EvidenceNumber,EvidenceTimeframe,EvidenceComment,EvidenceArea_StartTime,EvidenceArea_StartPrice,EvidenceArea_EndTime,EvidenceArea_EndPrice\n");
         }
 
@@ -107,7 +122,9 @@ void SaveCsvFiles()
             string evidenceComment = StringSubstr(CharArrayToString(g_chartData.evidences[i].comment), 0, COMMENT_LENGTH - 1);
             StringReplace(evidenceComment, "\"", "\"\""); // Correct CSV quote escaping
 
-            string evidenceLine = StringFormat("%s,%s,%d,%s,\"%s\",%s,%s,%s,%s\n",
+            
+
+            string evidenceLine = StringFormat("%s,%s,%d,%s,%s,%s,%s,%s,%s\n",
                                   evidenceId,
                                   tradeId,
                                   i + 1,
