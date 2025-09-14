@@ -14,7 +14,9 @@ void SaveCsvFiles()
     // 変数宣言を関数の先頭に移動
     string startTime, startPrice, endTime, endPrice;
 
-    string tradeId = (string)TimeCurrent();
+    // GetMicrosecondCount()を使用してユニークなIDを生成
+    string tradeId = (string)GetMicrosecondCount();
+
     string tradeTimeframeStr = TimeframeToString(g_chartData.session.tradeAreaTimeframe);
     // TradeAreaが描画されていない場合も考慮
     if (g_chartData.session.tradeAreaTimeframe == 0) {
@@ -24,19 +26,46 @@ void SaveCsvFiles()
     string cleanSymbol = Symbol();
     StringReplace(cleanSymbol, "/", "-"); // ファイル名として無効な'/'を'-'に置換
 
-    // ファイル名として使える形式のタイムスタンプを作成 (例: 2025_09_14_01_30_55)
-    string fileTimestamp = TimeToString(TimeCurrent(), "yyyy_MM_dd_HH_mm_ss");
-
-    string screenshotFile = cleanSymbol + "_" + tradeTimeframeStr + "_" + fileTimestamp + ".png";
+    // tradeIdをファイル名に使用して一意性を保証
+    string screenshotFile = cleanSymbol + "_" + tradeTimeframeStr + "_" + tradeId + ".png";
     string dirName = "ChartMemo";
-    string screenshotPath = screenshotFile; // ★最終テスト: サブフォルダを使わず、Files直下に保存
+
+    // Ensure the directory exists by opening and closing a dummy file
+    string dummyPath = dirName + "\\dummy.txt";
+    int handle = FileOpen(dummyPath, FILE_WRITE);
+    if(handle != INVALID_HANDLE)
+    {
+        FileClose(handle);
+        FileDelete(dummyPath);
+    }
+
+    string screenshotPath = dirName + "\\" + screenshotFile;
 
     Print("ChartMemo Path: ", screenshotPath);
 
-    // --- チャート画像を保存 ---
-    if(!ChartScreenShot(0, screenshotPath, 0, 0, ALIGN_RIGHT))
+    // --- チャート画像を保存 (代替方法) ---
+    CaptureActiveWindowToClipboard();
+    Sleep(500); // クリップボードに画像が格納されるのを待つ
+
+    string psScriptPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL4\\Files\\save_clipboard.ps1";
+    // PowerShellに渡すファイルパスを、MQL4\Filesからのフルパスに修正
+    string absoluteScreenshotPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL4\\Files\\" + screenshotPath;
+
+    string command = "powershell.exe";
+    // -ExecutionPolicy Bypass: 実行ポリシーを一時的に回避
+    // -File: 実行するスクリプトファイル
+    // -filePath: スクリプトに渡す引数（保存先のフルパス）
+    string parameters = "-ExecutionPolicy Bypass -File \"" + psScriptPath + "\" -filePath \"" + absoluteScreenshotPath + "\"";
+
+    // ShellExecuteWでPowerShellを非表示で実行 (SW_HIDE = 0)
+    int result = ShellExecuteW(0, "open", command, parameters, "", 0);
+    if(result <= 32) // ShellExecuteWは成功すると32より大きい値を返す
     {
-        Print("ChartMemo: Error saving screenshot. Error code: ", GetLastError());
+        Print("ChartMemo: Failed to execute PowerShell script to save screenshot. Result code: ", result, ", Last Error: ", GetLastError());
+    }
+    else
+    {
+        Print("ChartMemo: Screenshot command executed via PowerShell.");
     }
 
     // --- trades.csvへの書き込み ---
@@ -145,6 +174,8 @@ void SaveCsvFiles()
     }
     Print("ChartMemo: データをCSVに保存しました。");
 }
+
+
 
 //+------------------------------------------------------------------+
 //| セッションの状態を保存する関数                                     |
